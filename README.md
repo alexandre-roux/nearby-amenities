@@ -57,13 +57,13 @@ Preview the production build locally:
 
 - `index.html` — includes Leaflet CSS and bootstraps the React app.
 - `src/App.jsx` — renders the map component.
-- `src/NearbyMap.tsx` — main logic: icons, Overpass query, fetch, markers, and map.
+- `src/components/NearbyMap.js` — main logic: icons, Overpass query, fetch, markers, and map.
 - `src/emoji-marker.css` — styles for the emoji markers.
 - `package.json` — scripts and dependencies.
 
 ## Configuration
 
-- Radius: Defaults to 1200 meters in `NearbyMap.tsx`. Change the `radius` state if you want a different search area.
+- Radius: Defaults to 1200 meters in `NearbyMap.js`. Change the `radius` state if you want a different search area.
 - Initial center: Defaults to Berlin `[52.520008, 13.404954]` until geolocation resolves.
 - Overpass endpoint: Uses `https://overpass-api.de/api/interpreter` by default. If you need to point to a different
   instance, change the `fetchOverpass` URL.

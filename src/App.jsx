@@ -1,4 +1,4 @@
-import NearbyMap from "./components/NearbyMap.tsx";
+import NearbyMap from "./components/NearbyMap.jsx";
 
 function App() {
     return (

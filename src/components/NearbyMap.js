@@ -1,8 +1,8 @@
-import {useEffect, useMemo, useRef, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {MapContainer, Marker, Popup, TileLayer, useMap} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import "../emoji-marker.css"; // make sure this file exists (see CSS from previous message)
+import "../emoji-marker.css";
 
 // ---------- Emoji DivIcons ----------
 function emojiDivIcon(emoji, extraClass = "") {
@@ -79,39 +79,32 @@ async function fetchOverpass(lat, lon, radius = 1000, signal) {
             break;
         }
 
-        if (res.status === 504 && attempt < maxAttempts) {
+        if (!(res.status === 504 && attempt < maxAttempts)) {
+            if (!res.ok) {
+                const duration = Date.now() - startedAt;
+                console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status} on attempt ${attempt}`);
+                throw new Error(`Overpass error ${res.status}`);
+            }
+            const json = await res.json();
+            const duration = Date.now() - startedAt;
+            console.log(`[Request][Success] ${timestamp} (in ${duration}ms) Overpass returned ${Array.isArray(json.elements) ? json.elements.length : 0} elements on attempt ${attempt}`);
+            return (json.elements || [])
+                .map((el) => {
+                    const latLng = el.type === "node" ? {lat: el.lat, lon: el.lon} : el.center;
+                    return {
+                        id: `${el.type}/${el.id}`,
+                        lat: latLng?.lat,
+                        lon: latLng?.lon,
+                        tags: el.tags || {},
+                        type: el.type,
+                    };
+                })
+                .filter((p) => p.lat && p.lon);
+        } else {
             const backoff = 400 * Math.pow(2, attempt - 1); // 400ms, 800ms
             console.log(`[Request][Retry] ${timestamp} Overpass HTTP 504 on attempt ${attempt}. Retrying in ${backoff}ms...`);
-            try {
-                await sleep(backoff);
-            } catch (e) {
-                // Aborted during backoff
-                throw e;
-            }
-            continue;
+            await sleep(backoff);
         }
-
-        if (!res.ok) {
-            const duration = Date.now() - startedAt;
-            console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status} on attempt ${attempt}`);
-            throw new Error(`Overpass error ${res.status}`);
-        }
-
-        const json = await res.json();
-        const duration = Date.now() - startedAt;
-        console.log(`[Request][Success] ${timestamp} (in ${duration}ms) Overpass returned ${Array.isArray(json.elements) ? json.elements.length : 0} elements on attempt ${attempt}`);
-        return (json.elements || [])
-            .map((el) => {
-                const latLng = el.type === "node" ? {lat: el.lat, lon: el.lon} : el.center;
-                return {
-                    id: `${el.type}/${el.id}`,
-                    lat: latLng?.lat,
-                    lon: latLng?.lon,
-                    tags: el.tags || {},
-                    type: el.type,
-                };
-            })
-            .filter((p) => p.lat && p.lon);
     }
 
     // If we exit the loop without returning, either we exhausted retries on 504 or had a network error
@@ -134,30 +127,30 @@ function MapRefresher({center, radius, onData}) {
     const abortRef = useRef(null);
 
     // Helper to compute a suitable radius based on current map viewport
-    const computeViewportRadius = () => {
-        try {
-            const bounds = map.getBounds();
-            const c = map.getCenter();
-            const ne = bounds.getNorthEast();
-            // distance from center to the far corner (approx radius to cover view)
-            const dynamic = c.distanceTo(ne);
-            // Keep at least the provided base radius (if any) to avoid under-fetching
-            const base = typeof radius === "number" ? radius : 0;
-            // Add a small buffer (10%) to avoid frequent re-fetches during tiny zoom changes
-            return Math.max(base, Math.ceil(dynamic * 1.1));
-        } catch {
-            return radius || 1000;
+    const computeViewportRadius = useCallback(() => {
+        const base = typeof radius === "number" ? radius : 0;
+        if (!map || typeof map.getBounds !== "function" || typeof map.getCenter !== "function") {
+            return base || 1000;
         }
-    };
+        const bounds = map.getBounds();
+        const c = map.getCenter();
+        if (!bounds || !c || typeof bounds.getNorthEast !== "function" || typeof c.distanceTo !== "function") {
+            return base || 1000;
+        }
+        const ne = bounds.getNorthEast();
+        const dynamic = c.distanceTo(ne);
+        // Add a small buffer (10%) to avoid frequent re-fetches during tiny zoom changes
+        return Math.max(base, Math.ceil(dynamic * 1.1));
+    }, [map, radius]);
 
-    const doFetch = (lat, lng, r) => {
+    const doFetch = useCallback((lat, lng, r) => {
         // Cancel any in-flight request
         if (abortRef.current) abortRef.current.abort();
         const ctrl = new AbortController();
         abortRef.current = ctrl;
         return fetchOverpass(lat, lng, r, ctrl.signal).then(onData).catch(() => {
         });
-    };
+    }, [onData]);
 
     useEffect(() => {
         if (!center) return;
@@ -166,7 +159,7 @@ function MapRefresher({center, radius, onData}) {
         return () => {
             if (abortRef.current) abortRef.current.abort();
         };
-    }, [center, radius, onData]);
+    }, [center, radius, onData, computeViewportRadius, doFetch]);
 
     // Refetch when the map moves or zooms (light debounce) with updated radius
     useEffect(() => {
@@ -188,15 +181,15 @@ function MapRefresher({center, radius, onData}) {
             map.off("zoomend", trigger);
             clearTimeout(t);
         };
-    }, [map, radius, onData]);
+    }, [map, radius, onData, computeViewportRadius, doFetch]);
 
     return null;
 }
 
 export default function NearbyMap() {
-    const [center, setCenter] = useState<[number, number]>([52.520008, 13.404954]); // Berlin fallback
-    const [radius] = useState<number>(1200);
-    const [points, setPoints] = useState<any[]>([]);
+    const [center, setCenter] = useState([52.520008, 13.404954]); // Berlin fallback
+    const [radius] = useState(1200);
+    const [points, setPoints] = useState([]);
 
     // Browser geolocation
     useEffect(() => {
@@ -239,5 +232,4 @@ export default function NearbyMap() {
             </MapContainer>
         </div>
     );
-
 }
