@@ -22,21 +22,34 @@ const ICONS = {
 };
 
 // ---------- Overpass helpers ----------
-function buildOverpassQL(lat, lon, radiusMeters = 1000) {
+function buildOverpassQL(lat, lon, radiusMeters = 1000, opts = {}) {
+    const {toilets = true, fountains = true, glass = true} = opts || {};
+    const parts = [];
+    if (toilets) parts.push(`nwr["amenity"="toilets"](around:${radiusMeters},${lat},${lon});`);
+    if (fountains) parts.push(`nwr["amenity"="drinking_water"](around:${radiusMeters},${lat},${lon});`);
+    if (glass) {
+        parts.push(`nwr["amenity"="recycling"]["recycling:glass"="yes"](around:${radiusMeters},${lat},${lon});`);
+        parts.push(`nwr["amenity"="recycling"]["recycling:glass_bottles"="yes"](around:${radiusMeters},${lat},${lon});`);
+    }
+    // If nothing selected, return an empty harmless query that yields no results
+    if (parts.length === 0) {
+        return `
+[out:json][timeout:25];
+node(0,0,0,0);
+out;
+`;
+    }
     return `
 [out:json][timeout:25];
 (
-  nwr["amenity"="toilets"](around:${radiusMeters},${lat},${lon});
-  nwr["amenity"="drinking_water"](around:${radiusMeters},${lat},${lon});
-  nwr["amenity"="recycling"]["recycling:glass"="yes"](around:${radiusMeters},${lat},${lon});
-  nwr["amenity"="recycling"]["recycling:glass_bottles"="yes"](around:${radiusMeters},${lat},${lon});
+  ${parts.join("\n  ")}
 );
 out center 80;
 `;
 }
 
-async function fetchOverpass(lat, lon, radius = 1000, signal) {
-    const ql = buildOverpassQL(lat, lon, radius);
+async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
+    const ql = buildOverpassQL(lat, lon, radius, opts);
     const startedAt = Date.now();
     const timestamp = new Date(startedAt).toISOString();
     console.log(`[Request] ${timestamp} -> Overpass: lat=${lat}, lon=${lon}, radius=${radius}`);
@@ -122,7 +135,7 @@ function pickIcon(tags) {
     return ICONS.recycle; // fallback
 }
 
-function MapRefresher({center, radius, onData}) {
+function MapRefresher({center, radius, onData, filters}) {
     const map = useMap();
     const abortRef = useRef(null);
 
@@ -148,9 +161,9 @@ function MapRefresher({center, radius, onData}) {
         if (abortRef.current) abortRef.current.abort();
         const ctrl = new AbortController();
         abortRef.current = ctrl;
-        return fetchOverpass(lat, lng, r, ctrl.signal).then(onData).catch(() => {
+        return fetchOverpass(lat, lng, r, ctrl.signal, filters).then(onData).catch(() => {
         });
-    }, [onData]);
+    }, [onData, filters]);
 
     useEffect(() => {
         if (!center) return;
@@ -190,6 +203,7 @@ export default function NearbyMap() {
     const [center, setCenter] = useState([52.520008, 13.404954]); // Berlin fallback
     const [radius] = useState(1200);
     const [points, setPoints] = useState([]);
+    const [filters, setFilters] = useState({toilets: true, fountains: true, glass: true});
 
     // Browser geolocation
     useEffect(() => {
@@ -219,15 +233,47 @@ export default function NearbyMap() {
         [points]
     );
 
+    const toggle = (key) => setFilters((f) => ({...f, [key]: !f[key]}));
+
+    const btnStyle = (active) => ({
+        padding: "6px 10px",
+        marginRight: 8,
+        borderRadius: 6,
+        border: "1px solid #ccc",
+        background: active ? "#1e90ff" : "#fff",
+        color: active ? "#fff" : "#333",
+        cursor: "pointer"
+    });
+
     return (
-        <div style={{height: "100vh", width: "100%"}}>
+        <div style={{height: "100vh", width: "100%", position: "relative"}}>
+            <div style={{
+                position: "absolute",
+                top: 10,
+                left: 10,
+                zIndex: 1000,
+                background: "rgba(255,255,255,0.9)",
+                padding: 8,
+                borderRadius: 8,
+                boxShadow: "0 1px 4px rgba(0,0,0,0.1)"
+            }}>
+                <button title="Toggle toilets" onClick={() => toggle("toilets")} style={btnStyle(filters.toilets)}>🚻
+                    Toilets
+                </button>
+                <button title="Toggle drinking fountains" onClick={() => toggle("fountains")}
+                        style={btnStyle(filters.fountains)}>🚰 Fountains
+                </button>
+                <button title="Toggle glass recycling" onClick={() => toggle("glass")}
+                        style={btnStyle(filters.glass)}>♻️ Glass
+                </button>
+            </div>
             <MapContainer center={[center[0], center[1]]} zoom={15} style={{height: "100%", width: "100%"}}
                           scrollWheelZoom>
                 <TileLayer
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <MapRefresher center={center} radius={radius} onData={setPoints}/>
+                <MapRefresher center={center} radius={radius} onData={setPoints} filters={filters}/>
                 {markers}
             </MapContainer>
         </div>
