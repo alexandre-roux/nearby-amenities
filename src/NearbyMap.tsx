@@ -37,14 +37,30 @@ out center 80;
 
 async function fetchOverpass(lat, lon, radius = 1000, signal) {
     const ql = buildOverpassQL(lat, lon, radius);
-    const res = await fetch("https://overpass-api.de/api/interpreter", {
-        method: "POST",
-        headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
-        body: new URLSearchParams({data: ql}),
-        signal,
-    });
-    if (!res.ok) throw new Error(`Overpass error ${res.status}`);
+    const startedAt = Date.now();
+    const timestamp = new Date(startedAt).toISOString();
+    console.log(`[Request] ${timestamp} -> Overpass: lat=${lat}, lon=${lon}, radius=${radius}`);
+    let res;
+    try {
+        res = await fetch("https://overpass-api.de/api/interpreter", {
+            method: "POST",
+            headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+            body: new URLSearchParams({data: ql}),
+            signal,
+        });
+    } catch (e) {
+        const duration = Date.now() - startedAt;
+        console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass fetch error:`, e);
+        throw e;
+    }
+    if (!res.ok) {
+        const duration = Date.now() - startedAt;
+        console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status}`);
+        throw new Error(`Overpass error ${res.status}`);
+    }
     const json = await res.json();
+    const duration = Date.now() - startedAt;
+    console.log(`[Request][Success] ${timestamp} (in ${duration}ms) Overpass returned ${Array.isArray(json.elements) ? json.elements.length : 0} elements`);
     return (json.elements || [])
         .map((el) => {
             const latLng = el.type === "node" ? {lat: el.lat, lon: el.lon} : el.center;
