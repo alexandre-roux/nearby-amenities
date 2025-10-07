@@ -49,7 +49,8 @@ out center 80;
 }
 
 async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
-    const ql = buildOverpassQL(lat, lon, radius, opts);
+    // Trim the query to avoid leading newlines/spaces that can cause 400 on stricter parsers
+    const ql = buildOverpassQL(lat, lon, radius, opts).trim();
     const startedAt = Date.now();
     const timestamp = new Date(startedAt).toISOString();
     console.log(`[Request] ${timestamp} -> Overpass: lat=${lat}, lon=${lon}, radius=${radius}`);
@@ -74,13 +75,23 @@ async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
     let attempt = 0;
     let lastError;
 
+    // Try primary then fallback mirror on 400/429/5xx except 504 which we retry before switching
+    const endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter"
+    ];
+    let endpointIndex = 0;
+
     while (attempt < maxAttempts) {
         attempt++;
         let res;
         try {
-            res = await fetch("https://overpass-api.de/api/interpreter", {
+            res = await fetch(endpoints[endpointIndex], {
                 method: "POST",
-                headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "Accept": "application/json"
+                },
                 body: new URLSearchParams({data: ql}),
                 signal,
             });
@@ -92,10 +103,23 @@ async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
             break;
         }
 
+        // Switch to fallback endpoint if 400/429 encountered (likely rate limiting or parsing quirk)
+        if ((res.status === 400 || res.status === 429 || (res.status >= 500 && res.status !== 504)) && endpointIndex < endpoints.length - 1) {
+            const text = await res.text().catch(() => "");
+            console.log(`[Request][Switch] ${timestamp} Overpass HTTP ${res.status} on ${endpoints[endpointIndex]} (attempt ${attempt}). Body: ${text?.slice(0, 200)}`);
+            endpointIndex++;
+            // brief pause before retrying with new endpoint
+            await sleep(200);
+            // don't count this as a failed attempt toward max if it's the first endpoint; allow reattempt on new endpoint at same attempt count
+            attempt--;
+            continue;
+        }
+
         if (!(res.status === 504 && attempt < maxAttempts)) {
             if (!res.ok) {
                 const duration = Date.now() - startedAt;
-                console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status} on attempt ${attempt}`);
+                const text = await res.text().catch(() => "");
+                console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status} on attempt ${attempt}. Body: ${text?.slice(0, 200)}`);
                 throw new Error(`Overpass error ${res.status}`);
             }
             const json = await res.json();
@@ -135,7 +159,7 @@ function pickIcon(tags) {
     return ICONS.recycle; // fallback
 }
 
-function MapRefresher({center, radius, onData, filters}) {
+function MapRefresher({center, radius, onData}) {
     const map = useMap();
     const abortRef = useRef(null);
 
@@ -161,9 +185,9 @@ function MapRefresher({center, radius, onData, filters}) {
         if (abortRef.current) abortRef.current.abort();
         const ctrl = new AbortController();
         abortRef.current = ctrl;
-        return fetchOverpass(lat, lng, r, ctrl.signal, filters).then(onData).catch(() => {
+        return fetchOverpass(lat, lng, r, ctrl.signal).then(onData).catch(() => {
         });
-    }, [onData, filters]);
+    }, [onData]);
 
     useEffect(() => {
         if (!center) return;
@@ -218,19 +242,27 @@ export default function NearbyMap() {
 
     const markers = useMemo(
         () =>
-            points.map((p) => (
-                <Marker key={p.id} position={[p.lat, p.lon]} icon={pickIcon(p.tags)}
-                        title={p.tags.name || p.tags.operator || "Point"}>
-                    <Popup>
-                        <b>{p.tags.name || p.tags.operator || "Point"}</b>
-                        <br/>
-                        {p.tags.amenity === "toilets" && <>🚻 Toilets</>}
-                        {p.tags.amenity === "drinking_water" && <>🚰 Drinking water</>}
-                        {p.tags.amenity === "recycling" && <>♻️ Recycling (glass accepted)</>}
-                    </Popup>
-                </Marker>
-            )),
-        [points]
+            points
+                .filter((p) => {
+                    const a = p.tags.amenity;
+                    if (a === "toilets") return filters.toilets;
+                    if (a === "drinking_water") return filters.fountains;
+                    if (a === "recycling" && (p.tags["recycling:glass"] === "yes" || p.tags["recycling:glass_bottles"] === "yes")) return filters.glass;
+                    return false;
+                })
+                .map((p) => (
+                    <Marker key={p.id} position={[p.lat, p.lon]} icon={pickIcon(p.tags)}
+                            title={p.tags.name || p.tags.operator || "Point"}>
+                        <Popup>
+                            <b>{p.tags.name || p.tags.operator || "Point"}</b>
+                            <br/>
+                            {p.tags.amenity === "toilets" && <span>🚻 Toilets</span>}
+                            {p.tags.amenity === "drinking_water" && <span>🚰 Drinking water</span>}
+                            {p.tags.amenity === "recycling" && <span>♻️ Recycling (glass accepted)</span>}
+                        </Popup>
+                    </Marker>
+                )),
+        [points, filters]
     );
 
     const toggle = (key) => setFilters((f) => ({...f, [key]: !f[key]}));
@@ -273,7 +305,7 @@ export default function NearbyMap() {
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <MapRefresher center={center} radius={radius} onData={setPoints} filters={filters}/>
+                <MapRefresher center={center} radius={radius} onData={setPoints}/>
                 {markers}
             </MapContainer>
         </div>
