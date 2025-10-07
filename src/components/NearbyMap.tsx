@@ -2,7 +2,7 @@ import {useEffect, useMemo, useRef, useState} from "react";
 import {MapContainer, Marker, Popup, TileLayer, useMap} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import "./emoji-marker.css"; // make sure this file exists (see CSS from previous message)
+import "../emoji-marker.css"; // make sure this file exists (see CSS from previous message)
 
 // ---------- Emoji DivIcons ----------
 function emojiDivIcon(emoji, extraClass = "") {
@@ -40,39 +40,82 @@ async function fetchOverpass(lat, lon, radius = 1000, signal) {
     const startedAt = Date.now();
     const timestamp = new Date(startedAt).toISOString();
     console.log(`[Request] ${timestamp} -> Overpass: lat=${lat}, lon=${lon}, radius=${radius}`);
-    let res;
-    try {
-        res = await fetch("https://overpass-api.de/api/interpreter", {
-            method: "POST",
-            headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
-            body: new URLSearchParams({data: ql}),
-            signal,
-        });
-    } catch (e) {
-        const duration = Date.now() - startedAt;
-        console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass fetch error:`, e);
-        throw e;
-    }
-    if (!res.ok) {
-        const duration = Date.now() - startedAt;
-        console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status}`);
-        throw new Error(`Overpass error ${res.status}`);
-    }
-    const json = await res.json();
-    const duration = Date.now() - startedAt;
-    console.log(`[Request][Success] ${timestamp} (in ${duration}ms) Overpass returned ${Array.isArray(json.elements) ? json.elements.length : 0} elements`);
-    return (json.elements || [])
-        .map((el) => {
-            const latLng = el.type === "node" ? {lat: el.lat, lon: el.lon} : el.center;
-            return {
-                id: `${el.type}/${el.id}`,
-                lat: latLng?.lat,
-                lon: latLng?.lon,
-                tags: el.tags || {},
-                type: el.type,
+
+    // Helper sleep that respects AbortSignal
+    const sleep = (ms) => new Promise((resolve, reject) => {
+        const id = setTimeout(resolve, ms);
+        if (signal) {
+            const onAbort = () => {
+                clearTimeout(id);
+                reject(new DOMException("Aborted", "AbortError"));
             };
-        })
-        .filter((p) => p.lat && p.lon);
+            if (signal.aborted) {
+                clearTimeout(id);
+                return reject(new DOMException("Aborted", "AbortError"));
+            }
+            signal.addEventListener("abort", onAbort, {once: true});
+        }
+    });
+
+    const maxAttempts = 3; // 1 initial + up to 2 retries on 504
+    let attempt = 0;
+    let lastError;
+
+    while (attempt < maxAttempts) {
+        attempt++;
+        let res;
+        try {
+            res = await fetch("https://overpass-api.de/api/interpreter", {
+                method: "POST",
+                headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                body: new URLSearchParams({data: ql}),
+                signal,
+            });
+        } catch (e) {
+            // Network/abort errors: do not retry unless specifically a 504 response, which this isn't
+            const duration = Date.now() - startedAt;
+            console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass fetch error on attempt ${attempt}:`, e);
+            lastError = e;
+            break;
+        }
+
+        if (res.status === 504 && attempt < maxAttempts) {
+            const backoff = 400 * Math.pow(2, attempt - 1); // 400ms, 800ms
+            console.log(`[Request][Retry] ${timestamp} Overpass HTTP 504 on attempt ${attempt}. Retrying in ${backoff}ms...`);
+            try {
+                await sleep(backoff);
+            } catch (e) {
+                // Aborted during backoff
+                throw e;
+            }
+            continue;
+        }
+
+        if (!res.ok) {
+            const duration = Date.now() - startedAt;
+            console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status} on attempt ${attempt}`);
+            throw new Error(`Overpass error ${res.status}`);
+        }
+
+        const json = await res.json();
+        const duration = Date.now() - startedAt;
+        console.log(`[Request][Success] ${timestamp} (in ${duration}ms) Overpass returned ${Array.isArray(json.elements) ? json.elements.length : 0} elements on attempt ${attempt}`);
+        return (json.elements || [])
+            .map((el) => {
+                const latLng = el.type === "node" ? {lat: el.lat, lon: el.lon} : el.center;
+                return {
+                    id: `${el.type}/${el.id}`,
+                    lat: latLng?.lat,
+                    lon: latLng?.lon,
+                    tags: el.tags || {},
+                    type: el.type,
+                };
+            })
+            .filter((p) => p.lat && p.lon);
+    }
+
+    // If we exit the loop without returning, either we exhausted retries on 504 or had a network error
+    throw lastError || new Error("Overpass request failed after retries");
 }
 
 function pickIcon(tags) {
