@@ -22,3 +22,39 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Test coverage and caches
+coverage/
+.nyc_output/
+.eslintcache
+.stylelintcache
+
+# Package artifacts
+*.tgz
+
+# OS/Temp
+Thumbs.db
+Desktop.ini
+.tmp/
+tmp/
+
+# Optional tool outputs
+# storybook-static/
+# cypress/videos/
+# cypress/screenshots/
+# .parcel-cache/
+# .next/
+# out/
+# .pnp.*
+# .yarn/*
+# !.yarn/patches
+# !.yarn/plugins
+# !.yarn/releases
+# !.yarn/sdks
+# !.yarn/versions
