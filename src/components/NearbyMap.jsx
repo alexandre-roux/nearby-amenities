@@ -277,7 +277,7 @@ function MapRefresher({center, radius, filters, onData, onLoading}) {
                 const z = typeof map.getZoom === "function" ? map.getZoom() : 15;
                 map.setView([center[0], center[1]], z, {animate: true});
             }
-        } catch (_) {
+        } catch {
             // no-op: safe guard if map isn't ready
         }
         const r = computeViewportRadius();
@@ -318,8 +318,9 @@ export default function NearbyMap() {
     const [points, setPoints] = useState([]);
     const [filters, setFilters] = useState({toilets: true, fountains: true, glass: true});
     const [isLoading, setIsLoading] = useState(true);
+    const [isLocating, setIsLocating] = useState(false);
 
-    // Browser geolocation
+    // Browser geolocation (initial attempt)
     useEffect(() => {
         if (!("geolocation" in navigator)) return;
         navigator.geolocation.getCurrentPosition(
@@ -327,6 +328,21 @@ export default function NearbyMap() {
             () => {
             },
             {enableHighAccuracy: true, maximumAge: 10000, timeout: 8000}
+        );
+    }, []);
+
+    const handleLocateMe = useCallback(() => {
+        if (!("geolocation" in navigator)) return;
+        setIsLocating(true);
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                setCenter([pos.coords.latitude, pos.coords.longitude]);
+                setIsLocating(false);
+            },
+            () => {
+                setIsLocating(false);
+            },
+            {enableHighAccuracy: true, maximumAge: 5000, timeout: 10000}
         );
     }, []);
 
@@ -395,6 +411,23 @@ export default function NearbyMap() {
                     />
                     ♻️ Glass
                 </label>
+                <button
+                    type="button"
+                    onClick={handleLocateMe}
+                    disabled={isLocating || !("geolocation" in navigator)}
+                    title={"Locate me"}
+                    style={{
+                        background: "#fff",
+                        color: "#000",
+                        border: "1px solid #ddd",
+                        borderRadius: 6,
+                        padding: "6px 10px",
+                        boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
+                        cursor: isLocating ? "wait" : "pointer"
+                    }}
+                >
+                    {isLocating ? "Locating..." : "📍 Locate me"}
+                </button>
                 {isLoading && (
                     <span
                         style={{marginLeft: 8, fontWeight: 600, color: "#000"}}
