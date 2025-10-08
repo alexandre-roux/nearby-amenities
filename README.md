@@ -1,14 +1,13 @@
-# Nearby Amenities Map (React + Leaflet)
+# Nearby Amenities Map
 
-Find nearby public toilets, drinking water, and glass recycling points on an interactive map. The app centers on your
-location (with permission) and queries OpenStreetMap data via the Overpass API, displaying emoji-styled markers for a
+I couldn't find a basic straight to the point app to show me where is the next toilet or the next fountain, so I decided
+to build my own using OpensStreetMap and the Overpass API.
+The app centers on your location (with permission) and queries the Overpass API, displaying emoji-styled markers for a
 quick visual scan.
 
 - Toilets: 🚻
 - Drinking water: 🚰
 - Glass recycling: ♻️
-
-Current local date/time: 2025-10-07 14:08
 
 ## Quick start
 
@@ -115,5 +114,4 @@ please open an issue first to discuss scope and data/usage implications.
 
 ## License
 
-No explicit license file is present. Until a license is added, treat this repository as All Rights Reserved by the
-author. If you intend to reuse code, please add a license file (e.g., MIT) and attribution as appropriate.
+This project is licensed under the MIT License. See the LICENSE file for details.

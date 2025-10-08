@@ -3,6 +3,7 @@ import {MapContainer, Marker, Popup, TileLayer, useMap} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "../emoji-marker.css";
+import "./NearbyMap.scss";
 
 // ---------- Simple in-memory cache to reduce Overpass API load ----------
 const CACHE = new Map(); // key -> { at: number, data: any }
@@ -205,11 +206,7 @@ async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
 function pickIcon(tags) {
     if (tags.amenity === "drinking_water") return ICONS.water;
     if (tags.amenity === "toilets") return ICONS.toilet;
-    if (
-        tags.amenity === "recycling" &&
-        (tags["recycling:glass"] === "yes" || tags["recycling:glass_bottles"] === "yes")
-    )
-        return ICONS.recycle;
+    if (tags.amenity === "recycling") return ICONS.recycle;
     return ICONS.recycle; // fallback
 }
 
@@ -319,6 +316,52 @@ export default function NearbyMap() {
     const [filters, setFilters] = useState({toilets: true, fountains: true, glass: true});
     const [isLoading, setIsLoading] = useState(true);
     const [isLocating, setIsLocating] = useState(false);
+    // Detect mobile devices early to ensure MapContainer options are initialized correctly
+    const detectMobile = () => {
+        try {
+            if (typeof window === "undefined") return false;
+            const coarse = !!window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+            const small = window.innerWidth <= 768;
+            return !!(coarse || small);
+        } catch {
+            return false;
+        }
+    };
+    const [isMobile, setIsMobile] = useState(() => detectMobile());
+
+    // Consolidated interaction props for MapContainer to reduce repetition
+    const interactionProps = useMemo(() => (
+        isMobile
+            ? {
+                zoomControl: false,
+                scrollWheelZoom: false,
+                touchZoom: true,
+                doubleClickZoom: false,
+                boxZoom: false,
+                keyboard: false,
+                tap: false,
+            }
+            : {}
+    ), [isMobile]);
+
+    // Config-driven filter definitions to avoid duplicated markup
+    const filtersConfig = useMemo(() => ([
+        {key: 'toilets', label: '🚻 Toilets'},
+        {key: 'fountains', label: '🚰 Water'},
+        {key: 'glass', label: '♻️ Glass'},
+    ]), []);
+
+    // Keep mobile detection updated on resize/orientation changes
+    useEffect(() => {
+        function check() {
+            setIsMobile(detectMobile());
+        }
+
+        if (typeof window !== "undefined") {
+            window.addEventListener("resize", check);
+            return () => window.removeEventListener("resize", check);
+        }
+    }, []);
 
     // Browser geolocation (initial attempt)
     useEffect(() => {
@@ -353,7 +396,7 @@ export default function NearbyMap() {
                     const a = p.tags.amenity;
                     if (a === "toilets") return filters.toilets;
                     if (a === "drinking_water") return filters.fountains;
-                    if (a === "recycling" && (p.tags["recycling:glass"] === "yes" || p.tags["recycling:glass_bottles"] === "yes")) return filters.glass;
+                    if (a === "recycling") return filters.glass;
                     return false;
                 })
                 .map((p) => (
@@ -373,64 +416,49 @@ export default function NearbyMap() {
 
 
     return (
-        <div style={{height: "100vh", width: "100%", position: "relative"}}>
-            <div style={{
-                position: "absolute",
-                top: 10,
-                left: 60,
-                zIndex: 1000,
-                background: "rgba(255,255,255,0.9)",
-                padding: 8,
-                borderRadius: 8,
-                boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
-                display: "flex",
-                alignItems: "center",
-                gap: 10
-            }} aria-label="Filters">
-                <label style={{display: "flex", gap: 6, alignItems: "center", color: "#000"}}>
-                    <input
-                        type="checkbox"
-                        checked={!!filters.toilets}
-                        onChange={(e) => setFilters((f) => ({...f, toilets: e.target.checked}))}
-                    />
-                    🚻 Toilets
-                </label>
-                <label style={{display: "flex", gap: 6, alignItems: "center", color: "#000"}}>
-                    <input
-                        type="checkbox"
-                        checked={!!filters.fountains}
-                        onChange={(e) => setFilters((f) => ({...f, fountains: e.target.checked}))}
-                    />
-                    🚰 Water
-                </label>
-                <label style={{display: "flex", gap: 6, alignItems: "center", color: "#000"}}>
-                    <input
-                        type="checkbox"
-                        checked={!!filters.glass}
-                        onChange={(e) => setFilters((f) => ({...f, glass: e.target.checked}))}
-                    />
-                    ♻️ Glass
-                </label>
+        <div className="nearby-map-root">
+            <div className="filters-panel" aria-label="Filters">
+                {isMobile ? (
+                    <>
+                        {filtersConfig.map(({key, label}) => (
+                            <button
+                                key={key}
+                                type="button"
+                                onClick={() => setFilters((f) => ({...f, [key]: !f[key]}))}
+                                aria-pressed={!!filters[key]}
+                                title={`Toggle ${label.replace(/^[^\s]+\s/, '').toLowerCase()}`}
+                                className={`filter-btn ${filters[key] ? 'active' : ''}`}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </>
+                ) : (
+                    <>
+                        {filtersConfig.map(({key, label}) => (
+                            <label key={key} className="filter-label">
+                                <input
+                                    type="checkbox"
+                                    checked={!!filters[key]}
+                                    onChange={(e) => setFilters((f) => ({...f, [key]: e.target.checked}))}
+                                />
+                                {label}
+                            </label>
+                        ))}
+                    </>
+                )}
                 <button
                     type="button"
                     onClick={handleLocateMe}
                     disabled={isLocating || !("geolocation" in navigator)}
                     title={"Locate me"}
-                    style={{
-                        background: "#fff",
-                        color: "#000",
-                        border: "1px solid #ddd",
-                        borderRadius: 6,
-                        padding: "6px 10px",
-                        boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
-                        cursor: isLocating ? "wait" : "pointer"
-                    }}
+                    className="filter-btn"
                 >
-                    {isLocating ? "Locating..." : "📍 Locate me"}
+                    {isLocating ? "Locating..." : (isMobile ? "📍 Locate" : "📍 Locate me")}
                 </button>
                 {isLoading && (
                     <span
-                        style={{marginLeft: 8, fontWeight: 600, color: "#000"}}
+                        className="loading-status"
                         role="status"
                         aria-live="polite"
                     >
@@ -438,8 +466,13 @@ export default function NearbyMap() {
                     </span>
                 )}
             </div>
-            <MapContainer center={[center[0], center[1]]} zoom={15} style={{height: "100%", width: "100%"}}
-                          scrollWheelZoom>
+            <MapContainer
+                key={isMobile ? 'mobile' : 'desktop'}
+                center={[center[0], center[1]]}
+                zoom={15}
+                className="map-container"
+                {...interactionProps}
+            >
                 <TileLayer
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
