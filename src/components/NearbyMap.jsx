@@ -1,465 +1,313 @@
-import React, {useEffect, useMemo, useRef, useState} from "react";
-import {MapContainer, Marker, Popup, TileLayer, useMap, useMapEvent} from "react-leaflet";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {MapContainer, Marker, Popup, TileLayer, useMap} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "../emoji-marker.css";
 
-/**
- * NearbyMap.jsx
- * - Fetches nearby POIs (toilets, drinking water, glass recycling) from Overpass.
- * - Viewport-aware radius (recomputed on move/zoom).
- * - In-memory response de-dup cache keyed by rounded center+radius+filters.
- * - Recenter map when geolocation resolves (MapContainer doesn't do this by itself).
- * - Handles 429/5xx with Retry-After & mirror fallback. Aborts on unmount.
- * - Emoji-based DivIcons with lightweight popups.
- */
+// ---------- Emoji DivIcons ----------
+function emojiDivIcon(emoji, extraClass = "") {
+    return L.divIcon({
+        className: "", // avoid default leaflet icon class
+        html: `<div class="emoji-marker ${extraClass}" aria-hidden="true">${emoji}</div>`,
+        iconSize: [30, 30],
+        iconAnchor: [15, 30],  // bottom-center so the "pin" sits on the point
+        popupAnchor: [0, -28],
+    });
+}
 
-const DEFAULT_CENTER = [52.520008, 13.404954]; // Berlin
-const DEFAULT_ZOOM = 14;
+const ICONS = {
+    water: emojiDivIcon("🚰", "emoji-water"),
+    toilet: emojiDivIcon("🚻", "emoji-toilet"),
+    recycle: emojiDivIcon("♻️", "emoji-recycle"),
+};
 
-const OVERPASS_ENDPOINTS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.openstreetmap.ru/api/interpreter",
-];
+// ---------- Overpass helpers ----------
+function buildOverpassQL(lat, lon, radiusMeters = 1000, opts = {}) {
+    const {toilets = true, fountains = true, glass = true} = opts || {};
+    const parts = [];
+    if (toilets) parts.push(`nwr["amenity"="toilets"](around:${radiusMeters},${lat},${lon});`);
+    if (fountains) parts.push(`nwr["amenity"="drinking_water"](around:${radiusMeters},${lat},${lon});`);
+    if (glass) {
+        parts.push(`nwr["amenity"="recycling"]["recycling:glass"="yes"](around:${radiusMeters},${lat},${lon});`);
+        parts.push(`nwr["amenity"="recycling"]["recycling:glass_bottles"="yes"](around:${radiusMeters},${lat},${lon});`);
+    }
+    // If nothing selected, return an empty harmless query that yields no results
+    if (parts.length === 0) {
+        return `
+[out:json][timeout:25];
+node(0,0,0,0);
+out;
+`;
+    }
+    return `
+[out:json][timeout:25];
+(
+  ${parts.join("\n  ")}
+);
+out center 80;
+`;
+}
 
-export default function NearbyMap(props) {
-    const [center, setCenter] = useState(props.initialCenter || DEFAULT_CENTER);
-    const [zoom, setZoom] = useState(props.initialZoom || DEFAULT_ZOOM);
-    const [radius, setRadius] = useState(1200);
-    const [markers, setMarkers] = useState([]);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
+async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
+    // Trim the query to avoid leading newlines/spaces that can cause 400 on stricter parsers
+    const ql = buildOverpassQL(lat, lon, radius, opts).trim();
+    const startedAt = Date.now();
+    const timestamp = new Date(startedAt).toISOString();
+    console.log(`[Request] ${timestamp} -> Overpass: lat=${lat}, lon=${lon}, radius=${radius}`);
 
-    // If caller provides filters, use them; otherwise offer simple internal toggles
-    const [filters, setFilters] = useState(
-        props.filters ?? {toilets: true, fountains: true, glass: true}
-    );
+    // Helper sleep that respects AbortSignal
+    const sleep = (ms) => new Promise((resolve, reject) => {
+        const id = setTimeout(resolve, ms);
+        if (signal) {
+            const onAbort = () => {
+                clearTimeout(id);
+                reject(new DOMException("Aborted", "AbortError"));
+            };
+            if (signal.aborted) {
+                clearTimeout(id);
+                return reject(new DOMException("Aborted", "AbortError"));
+            }
+            signal.addEventListener("abort", onAbort, {once: true});
+        }
+    });
 
-    const cacheRef = useRef(new Map());
+    const maxAttempts = 3; // 1 initial + up to 2 retries on 504
+    let attempt = 0;
+    let lastError;
 
-    // --- Geolocation: set initial center, then recenter via <RecenterOnChange />
-    useEffect(() => {
-        if (!navigator.geolocation) return;
-        const success = (pos) => {
-            const {latitude, longitude} = pos.coords;
-            setCenter([latitude, longitude]);
-        };
-        const err = () => {
-        }; // silently ignore
-        navigator.geolocation.getCurrentPosition(success, err, {
-            enableHighAccuracy: true,
-            maximumAge: 12_000,
-            timeout: 10_000,
+    // Try primary then fallback mirror on 400/429/5xx except 504 which we retry before switching
+    const endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter"
+    ];
+    let endpointIndex = 0;
+
+    while (attempt < maxAttempts) {
+        attempt++;
+        let res;
+        try {
+            res = await fetch(endpoints[endpointIndex], {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "Accept": "application/json"
+                },
+                body: new URLSearchParams({data: ql}),
+                signal,
+            });
+        } catch (e) {
+            // Network/abort errors: do not retry unless specifically a 504 response, which this isn't
+            const duration = Date.now() - startedAt;
+            console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass fetch error on attempt ${attempt}:`, e);
+            lastError = e;
+            break;
+        }
+
+        // Switch to fallback endpoint if 400/429 encountered (likely rate limiting or parsing quirk)
+        if ((res.status === 400 || res.status === 429 || (res.status >= 500 && res.status !== 504)) && endpointIndex < endpoints.length - 1) {
+            const text = await res.text().catch(() => "");
+            console.log(`[Request][Switch] ${timestamp} Overpass HTTP ${res.status} on ${endpoints[endpointIndex]} (attempt ${attempt}). Body: ${text?.slice(0, 200)}`);
+            endpointIndex++;
+            // brief pause before retrying with new endpoint
+            await sleep(200);
+            // don't count this as a failed attempt toward max if it's the first endpoint; allow reattempt on new endpoint at same attempt count
+            attempt--;
+            continue;
+        }
+
+        if (!(res.status === 504 && attempt < maxAttempts)) {
+            if (!res.ok) {
+                const duration = Date.now() - startedAt;
+                const text = await res.text().catch(() => "");
+                console.log(`[Request][Failed] ${timestamp} (after ${duration}ms) Overpass HTTP ${res.status} on attempt ${attempt}. Body: ${text?.slice(0, 200)}`);
+                throw new Error(`Overpass error ${res.status}`);
+            }
+            const json = await res.json();
+            const duration = Date.now() - startedAt;
+            console.log(`[Request][Success] ${timestamp} (in ${duration}ms) Overpass returned ${Array.isArray(json.elements) ? json.elements.length : 0} elements on attempt ${attempt}`);
+            return (json.elements || [])
+                .map((el) => {
+                    const latLng = el.type === "node" ? {lat: el.lat, lon: el.lon} : el.center;
+                    return {
+                        id: `${el.type}/${el.id}`,
+                        lat: latLng?.lat,
+                        lon: latLng?.lon,
+                        tags: el.tags || {},
+                        type: el.type,
+                    };
+                })
+                .filter((p) => p.lat && p.lon);
+        } else {
+            const backoff = 400 * Math.pow(2, attempt - 1); // 400ms, 800ms
+            console.log(`[Request][Retry] ${timestamp} Overpass HTTP 504 on attempt ${attempt}. Retrying in ${backoff}ms...`);
+            await sleep(backoff);
+        }
+    }
+
+    // If we exit the loop without returning, either we exhausted retries on 504 or had a network error
+    throw lastError || new Error("Overpass request failed after retries");
+}
+
+function pickIcon(tags) {
+    if (tags.amenity === "drinking_water") return ICONS.water;
+    if (tags.amenity === "toilets") return ICONS.toilet;
+    if (
+        tags.amenity === "recycling" &&
+        (tags["recycling:glass"] === "yes" || tags["recycling:glass_bottles"] === "yes")
+    )
+        return ICONS.recycle;
+    return ICONS.recycle; // fallback
+}
+
+function MapRefresher({center, radius, onData}) {
+    const map = useMap();
+    const abortRef = useRef(null);
+
+    // Helper to compute a suitable radius based on current map viewport
+    const computeViewportRadius = useCallback(() => {
+        const base = typeof radius === "number" ? radius : 0;
+        if (!map || typeof map.getBounds !== "function" || typeof map.getCenter !== "function") {
+            return base || 1000;
+        }
+        const bounds = map.getBounds();
+        const c = map.getCenter();
+        if (!bounds || !c || typeof bounds.getNorthEast !== "function" || typeof c.distanceTo !== "function") {
+            return base || 1000;
+        }
+        const ne = bounds.getNorthEast();
+        const dynamic = c.distanceTo(ne);
+        // Add a small buffer (10%) to avoid frequent re-fetches during tiny zoom changes
+        return Math.max(base, Math.ceil(dynamic * 1.1));
+    }, [map, radius]);
+
+    const doFetch = useCallback((lat, lng, r) => {
+        // Cancel any in-flight request
+        if (abortRef.current) abortRef.current.abort();
+        const ctrl = new AbortController();
+        abortRef.current = ctrl;
+        return fetchOverpass(lat, lng, r, ctrl.signal).then(onData).catch(() => {
         });
+    }, [onData]);
+
+    useEffect(() => {
+        if (!center) return;
+        const r = computeViewportRadius();
+        doFetch(center[0], center[1], r);
+        return () => {
+            if (abortRef.current) abortRef.current.abort();
+        };
+    }, [center, radius, onData, computeViewportRadius, doFetch]);
+
+    // Refetch when the map moves or zooms (light debounce) with updated radius
+    useEffect(() => {
+        let t;
+
+        function trigger() {
+            clearTimeout(t);
+            t = setTimeout(() => {
+                const c = map.getCenter();
+                const r = computeViewportRadius();
+                doFetch(c.lat, c.lng, r);
+            }, 300);
+        }
+
+        map.on("moveend", trigger);
+        map.on("zoomend", trigger);
+        return () => {
+            map.off("moveend", trigger);
+            map.off("zoomend", trigger);
+            clearTimeout(t);
+        };
+    }, [map, radius, onData, computeViewportRadius, doFetch]);
+
+    return null;
+}
+
+export default function NearbyMap() {
+    const [center, setCenter] = useState([52.520008, 13.404954]); // Berlin fallback
+    const [radius] = useState(1200);
+    const [points, setPoints] = useState([]);
+    const [filters, setFilters] = useState({toilets: true, fountains: true, glass: true});
+
+    // Browser geolocation
+    useEffect(() => {
+        if (!("geolocation" in navigator)) return;
+        navigator.geolocation.getCurrentPosition(
+            (pos) => setCenter([pos.coords.latitude, pos.coords.longitude]),
+            () => {
+            },
+            {enableHighAccuracy: true, maximumAge: 10000, timeout: 8000}
+        );
     }, []);
 
-    // --- Recenter when `center` changes AFTER initial render
-    function RecenterOnChange({center}) {
-        const map = useMap();
-        useEffect(() => {
-            if (center) map.setView(center);
-        }, [center, map]);
-        return null;
-    }
-
-    // --- Emoji Icons
-    const emojiIcon = (emoji) =>
-        L.divIcon({
-            html: `<span>${emoji}</span>`,
-            className: "emoji-marker",
-            iconSize: [24, 24],
-            iconAnchor: [12, 12],
-        });
-
-    const icons = useMemo(
-        () => ({
-            toilet: emojiIcon("🚻"),
-            water: emojiIcon("🚰"),
-            glass: emojiIcon("♻️"),
-            default: emojiIcon("📍"),
-        }),
-        []
-    );
-
-    function pickIcon(tags) {
-        if (!tags) return icons.default;
-        if (tags.amenity === "toilets") return icons.toilet;
-        if (tags.amenity === "drinking_water") return icons.water;
-        // recycling tags vary; check any form of glass
-        if (
-            tags.recycling === "glass" ||
-            tags["recycling:glass"] === "yes" ||
-            tags["recycling:glass_bottles"] === "yes" ||
-            tags["recycling:glass_packaging"] === "yes" ||
-            tags["recycling:material"] === "glass"
-        )
-            return icons.glass;
-        return icons.default;
-    }
-
-    // --- Overpass query builder
-    function buildQuery(lat, lng, r, options) {
-        const wantsToilets = options?.toilets;
-        const wantsWater = options?.fountains;
-        const wantsGlass = options?.glass;
-
-        const parts = [];
-
-        if (wantsToilets) {
-            parts.push(
-                `nwr["amenity"="toilets"](around:${r},${lat},${lng});`
-            );
-        }
-        if (wantsWater) {
-            parts.push(
-                `nwr["amenity"="drinking_water"](around:${r},${lat},${lng});`
-            );
-        }
-        if (wantsGlass) {
-            // Capture common glass recycling tags
-            parts.push(
-                [
-                    `nwr["recycling"="glass"](around:${r},${lat},${lng});`,
-                    `nwr["recycling:glass"="yes"](around:${r},${lat},${lng});`,
-                    `nwr["recycling:glass_bottles"="yes"](around:${r},${lat},${lng});`,
-                    `nwr["recycling:glass_packaging"="yes"](around:${r},${lat},${lng});`,
-                    `nwr["recycling:material"="glass"](around:${r},${lat},${lng});`,
-                ].join("")
-            );
-        }
-
-        // If no filters selected, avoid querying everything; default to nothing
-        if (parts.length === 0) return null;
-
-        // Request JSON with center for ways/relations
-        return `
-      [out:json][timeout:25];
-      (
-        ${parts.join("\n")}
-      );
-      out center tags;
-    `;
-    }
-
-    // --- Overpass fetcher with mirrors, retries, exponential backoff + Retry-After
-    async function fetchOverpass(lat, lng, r, signal, options) {
-        const query = buildQuery(lat, lng, r, options);
-        if (!query) return [];
-
-        let lastError = null;
-
-        for (let endpointIndex = 0; endpointIndex < OVERPASS_ENDPOINTS.length; endpointIndex++) {
-            const endpoint = OVERPASS_ENDPOINTS[endpointIndex];
-
-            for (let attempt = 0; attempt < 3; attempt++) {
-                try {
-                    const res = await fetch(endpoint, {
-                        method: "POST",
-                        headers: {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"},
-                        body: new URLSearchParams({data: query}),
-                        signal,
-                    });
-
-                    if (!res.ok) {
-                        // Respect Retry-After if present
-                        if (res.status === 429 || res.status >= 500) {
-                            const retryAfter = res.headers.get("Retry-After");
-                            if (retryAfter) {
-                                if (/^\d+$/.test(retryAfter)) {
-                                    await sleep(Number(retryAfter) * 1000);
-                                } else {
-                                    // small default if date-string or unexpected
-                                    await sleep(800);
-                                }
-                            }
-                        }
-
-                        // For 4xx/5xx, decide to retry or switch mirror
-                        if (res.status === 504 && attempt < 2) {
-                            // Gateway timeout: exponential backoff
-                            await sleep(400 * Math.pow(2, attempt));
-                            continue;
-                        }
-
-                        // Switch mirror on classic rate-limit/overload
-                        if ((res.status === 429 || res.status >= 500) && attempt === 2) {
-                            lastError = new Error(`Overpass error ${res.status} at ${endpoint}`);
-                            break; // break attempts, try next mirror
-                        }
-
-                        // Other non-OK statuses: try next attempt quickly
-                        lastError = new Error(`HTTP ${res.status} from ${endpoint}`);
-                        continue;
-                    }
-
-                    const json = await res.json();
-                    return normalizeElements(json?.elements || []);
-                } catch (e) {
-                    // Network error or abort
-                    if (signal?.aborted) throw new Error("Request aborted");
-                    lastError = e;
-                    // Backoff before retrying same mirror
-                    await sleep(300 * Math.pow(2, attempt));
-                }
-            }
-            // go to next mirror if previous loop didn't return
-        }
-
-        throw lastError || new Error("Overpass request failed");
-    }
-
-    function normalizeElements(elements) {
-        // Map OSM elements into unified points
-        // Support node (lat/lon), way/relation with center
-        return elements
-            .map((el) => {
-                let lat = el.lat ?? el.center?.lat;
-                let lon = el.lon ?? el.center?.lon;
-                if (typeof lat !== "number" || typeof lon !== "number") return null;
-                return {
-                    id: `${el.type}/${el.id}`,
-                    type: el.type,
-                    osmid: el.id,
-                    lat,
-                    lon,
-                    tags: el.tags || {},
-                };
-            })
-            .filter(Boolean);
-    }
-
-    // --- Cache helpers
-    function cacheKey(lat, lng, r, opts) {
-        return [
-            lat.toFixed(4),
-            lng.toFixed(4),
-            Math.round(r / 50),
-            opts?.toilets ? 1 : 0,
-            opts?.fountains ? 1 : 0,
-            opts?.glass ? 1 : 0,
-        ].join("|");
-    }
-
-    async function fetchWithCache(lat, lng, r, signal, options) {
-        const key = cacheKey(lat, lng, r, options);
-        const cache = cacheRef.current;
-        if (cache.has(key)) return cache.get(key);
-
-        const p = (async () => {
-            try {
-                const data = await fetchOverpass(lat, lng, r, signal, options);
-                cache.set(key, data);
-                return data;
-            } catch (e) {
-                cache.delete(key); // let future attempts refetch
-                throw e;
-            }
-        })();
-
-        // Store in-flight promise to dedupe concurrent callers
-        cache.set(key, p);
-        return p;
-    }
-
-    // --- Map-driven refresh
-    function MapRefresher({onData, onLoading, options}) {
-        const map = useMapEvent("moveend", () => {
-            const c = map.getCenter();
-            const bounds = map.getBounds();
-            const estRadius = Math.ceil(c.distanceTo(bounds.getNorthEast()) / 2);
-            if (estRadius !== radius) setRadius(estRadius);
-        });
-
-        // initialize radius once the map is ready
-        useEffect(() => {
-            const c = map.getCenter();
-            const bounds = map.getBounds();
-            const estRadius = Math.ceil(c.distanceTo(bounds.getNorthEast()) / 2);
-            if (estRadius !== radius) setRadius(estRadius);
-            // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [map]);
-
-        // (re)fetch when viewport or filters change
-        useEffect(() => {
-            const ctrl = new AbortController();
-            onLoading?.(true);
-            setError(null);
-            const c = map.getCenter();
-            fetchWithCache(c.lat, c.lng, radius, ctrl.signal, options)
-                .then(onData)
-                .catch((e) => {
-                    if (ctrl.signal.aborted) return;
-                    setError(e?.message || "Request failed");
+    const markers = useMemo(
+        () =>
+            points
+                .filter((p) => {
+                    const a = p.tags.amenity;
+                    if (a === "toilets") return filters.toilets;
+                    if (a === "drinking_water") return filters.fountains;
+                    if (a === "recycling" && (p.tags["recycling:glass"] === "yes" || p.tags["recycling:glass_bottles"] === "yes")) return filters.glass;
+                    return false;
                 })
-                .finally(() => onLoading?.(false));
-
-            return () => ctrl.abort();
-            // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [map, radius, options?.toilets, options?.fountains, options?.glass]);
-
-        return null;
-    }
-
-    // --- UI bits
-    function LocateButton() {
-        const map = useMap();
-        return (
-            <button
-                type="button"
-                onClick={() => map.setView(center, Math.max(15, map.getZoom()))}
-                title="Recenter to your location"
-                style={floatingButtonStyle}
-            >
-                Locate me
-            </button>
-        );
-    }
-
-    // Merge external filters into local (if provided later)
-    useEffect(() => {
-        if (props.filters) setFilters(props.filters);
-    }, [props.filters]);
-
-    const floatingPanelStyle = {
-        position: "absolute",
-        zIndex: 1000,
-        top: 12,
-        left: 12,
-        padding: 10,
-        borderRadius: 10,
-        background: "rgba(255,255,255,0.95)",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-        display: "flex",
-        gap: 10,
-        alignItems: "center",
-        fontSize: 14,
-    };
-
-    const floatingButtonStyle = {
-        position: "absolute",
-        zIndex: 1000,
-        top: 12,
-        right: 12,
-        padding: "8px 10px",
-        borderRadius: 8,
-        background: "white",
-        border: "1px solid #ddd",
-        cursor: "pointer",
-        fontSize: 12,
-        boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
-    };
-
-    return (
-        <div className="nearby-map-wrapper" style={{position: "relative", width: "100%", height: "100%"}}>
-            {/* Simple filter toggles if caller didn't provide their own UI */}
-            {!props.filters && (
-                <div style={floatingPanelStyle} aria-label="Filters">
-                    <label style={{display: "flex", gap: 6, alignItems: "center"}}>
-                        <input
-                            type="checkbox"
-                            checked={!!filters.toilets}
-                            onChange={(e) => setFilters((f) => ({...f, toilets: e.target.checked}))}
-                        />
-                        🚻 Toilets
-                    </label>
-                    <label style={{display: "flex", gap: 6, alignItems: "center"}}>
-                        <input
-                            type="checkbox"
-                            checked={!!filters.fountains}
-                            onChange={(e) => setFilters((f) => ({...f, fountains: e.target.checked}))}
-                        />
-                        🚰 Water
-                    </label>
-                    <label style={{display: "flex", gap: 6, alignItems: "center"}}>
-                        <input
-                            type="checkbox"
-                            checked={!!filters.glass}
-                            onChange={(e) => setFilters((f) => ({...f, glass: e.target.checked}))}
-                        />
-                        ♻️ Glass
-                    </label>
-                    {loading && <span style={{opacity: 0.7}}>Loading…</span>}
-                </div>
-            )}
-
-            <MapContainer
-                center={center}
-                zoom={zoom}
-                style={{width: "100%", height: "100%"}}
-                whenCreated={(map) => {
-                    // optional: expose map via ref
-                }}
-            >
-                <RecenterOnChange center={center}/>
-                <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                />
-
-                <MapRefresher
-                    onData={(data) => setMarkers(data)}
-                    onLoading={setLoading}
-                    options={filters}
-                />
-
-                {/* Markers */}
-                {markers.map((m) => (
-                    <Marker
-                        key={m.id}
-                        position={[m.lat, m.lon]}
-                        icon={pickIcon(m.tags)}
-                        // assistive name fallback via title
-                        title={m.tags.name || readableTitle(m.tags)}
-                    >
+                .map((p) => (
+                    <Marker key={p.id} position={[p.lat, p.lon]} icon={pickIcon(p.tags)}
+                            title={p.tags.name || p.tags.operator || "Point"}>
                         <Popup>
-                            <strong>{m.tags.name || readableTitle(m.tags)}</strong>
+                            <b>{p.tags.name || p.tags.operator || "Point"}</b>
                             <br/>
-                            {renderTagsSummary(m.tags)}
-                            <br/>
-                            <a
-                                href={`https://www.openstreetmap.org/${m.type}/${m.osmid}`}
-                                target="_blank"
-                                rel="noreferrer"
-                            >
-                                View on OSM ↗
-                            </a>
+                            {p.tags.amenity === "toilets" && <span>🚻 Toilets</span>}
+                            {p.tags.amenity === "drinking_water" && <span>🚰 Drinking water</span>}
+                            {p.tags.amenity === "recycling" && <span>♻️ Recycling (glass accepted)</span>}
                         </Popup>
                     </Marker>
-                ))}
+                )),
+        [points, filters]
+    );
 
-                <LocateButton/>
+    const toggle = (key) => setFilters((f) => ({...f, [key]: !f[key]}));
+
+    const btnStyle = (active) => ({
+        padding: "6px 10px",
+        marginRight: 8,
+        borderRadius: 6,
+        border: "1px solid #ccc",
+        background: active ? "#1e90ff" : "#fff",
+        color: active ? "#fff" : "#333",
+        cursor: "pointer"
+    });
+
+    return (
+        <div style={{height: "100vh", width: "100%", position: "relative"}}>
+            <div style={{
+                position: "absolute",
+                top: 10,
+                left: 10,
+                zIndex: 1000,
+                background: "rgba(255,255,255,0.9)",
+                padding: 8,
+                borderRadius: 8,
+                boxShadow: "0 1px 4px rgba(0,0,0,0.1)"
+            }}>
+                <button title="Toggle toilets" onClick={() => toggle("toilets")} style={btnStyle(filters.toilets)}>🚻
+                    Toilets
+                </button>
+                <button title="Toggle drinking fountains" onClick={() => toggle("fountains")}
+                        style={btnStyle(filters.fountains)}>🚰 Fountains
+                </button>
+                <button title="Toggle glass recycling" onClick={() => toggle("glass")}
+                        style={btnStyle(filters.glass)}>♻️ Glass
+                </button>
+            </div>
+            <MapContainer center={[center[0], center[1]]} zoom={15} style={{height: "100%", width: "100%"}}
+                          scrollWheelZoom>
+                <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                <MapRefresher center={center} radius={radius} onData={setPoints}/>
+                {markers}
             </MapContainer>
         </div>
     );
-}
-
-// --- helpers
-function renderTagsSummary(tags = {}) {
-    const bits = [];
-    if (tags.opening_hours) bits.push(`Hours: ${tags.opening_hours}`);
-    if (tags.wheelchair) bits.push(`Wheelchair: ${tags.wheelchair}`);
-    if (tags.operator) bits.push(`Operator: ${tags.operator}`);
-    if (tags.fee === "yes") bits.push("Fee: yes");
-    if (tags.access) bits.push(`Access: ${tags.access}`);
-    if (!bits.length) return "No extra details";
-    return bits.join(" · ");
-}
-
-function readableTitle(tags = {}) {
-    if (tags.amenity === "toilets") return "Public toilets";
-    if (tags.amenity === "drinking_water") return "Drinking water";
-    if (
-        tags.recycling === "glass" ||
-        tags["recycling:glass"] === "yes" ||
-        tags["recycling:glass_bottles"] === "yes" ||
-        tags["recycling:glass_packaging"] === "yes" ||
-        tags["recycling:material"] === "glass"
-    )
-        return "Glass recycling";
-    return "Point of interest";
-}
-
-function sleep(ms) {
-    return new Promise((res) => setTimeout(res, ms));
 }
