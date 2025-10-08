@@ -213,9 +213,10 @@ function pickIcon(tags) {
     return ICONS.recycle; // fallback
 }
 
-function MapRefresher({center, radius, filters, onData}) {
+function MapRefresher({center, radius, filters, onData, onLoading}) {
     const map = useMap();
     const abortRef = useRef(null);
+    const pendingRef = useRef(0); // track concurrent in-flight requests to avoid loading flicker
 
     // Helper to compute a suitable radius based on current map viewport
     const computeViewportRadius = useCallback(() => {
@@ -241,6 +242,8 @@ function MapRefresher({center, radius, filters, onData}) {
         if (cached && (now - cached.at) < CACHE_TTL_MS) {
             console.log(`[Cache][Hit] ${k}`);
             onData(cached.data);
+            // For cache hits, only hide loading if there are no pending network requests
+            if (typeof onLoading === "function" && pendingRef.current === 0) onLoading(false);
             return Promise.resolve();
         }
         console.log(`[Cache][Miss] ${k}`);
@@ -248,6 +251,9 @@ function MapRefresher({center, radius, filters, onData}) {
         if (abortRef.current) abortRef.current.abort();
         const ctrl = new AbortController();
         abortRef.current = ctrl;
+        // mark this request as pending and update loading state accordingly
+        pendingRef.current += 1;
+        if (typeof onLoading === "function") onLoading(true);
         return fetchOverpass(lat, lng, r, ctrl.signal, normalizeFilters(filters))
             .then((data) => {
                 CACHE.set(k, {at: Date.now(), data});
@@ -255,8 +261,13 @@ function MapRefresher({center, radius, filters, onData}) {
             })
             .catch(() => {
                 // ignore (likely aborted); keep current data
+            })
+            .finally(() => {
+                // decrement pending counter and update loading state based on remaining requests
+                pendingRef.current = Math.max(0, pendingRef.current - 1);
+                if (typeof onLoading === "function") onLoading(pendingRef.current > 0);
             });
-    }, [onData, filters]);
+    }, [onData, filters, onLoading]);
 
     useEffect(() => {
         if (!center) return;
@@ -306,6 +317,7 @@ export default function NearbyMap() {
     const [radius] = useState(1200);
     const [points, setPoints] = useState([]);
     const [filters, setFilters] = useState({toilets: true, fountains: true, glass: true});
+    const [isLoading, setIsLoading] = useState(true);
 
     // Browser geolocation
     useEffect(() => {
@@ -383,6 +395,15 @@ export default function NearbyMap() {
                     />
                     ♻️ Glass
                 </label>
+                {isLoading && (
+                    <span
+                        style={{marginLeft: 8, fontWeight: 600, color: "#000"}}
+                        role="status"
+                        aria-live="polite"
+                    >
+                        Loading...
+                    </span>
+                )}
             </div>
             <MapContainer center={[center[0], center[1]]} zoom={15} style={{height: "100%", width: "100%"}}
                           scrollWheelZoom>
@@ -390,7 +411,8 @@ export default function NearbyMap() {
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <MapRefresher center={center} radius={radius} filters={filters} onData={setPoints}/>
+                <MapRefresher center={center} radius={radius} filters={filters} onData={setPoints}
+                              onLoading={setIsLoading}/>
                 {markers}
             </MapContainer>
         </div>
