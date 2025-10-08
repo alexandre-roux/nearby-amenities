@@ -4,6 +4,30 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "../emoji-marker.css";
 
+// ---------- Simple in-memory cache to reduce Overpass API load ----------
+const CACHE = new Map(); // key -> { at: number, data: any }
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function roundCoord(x) {
+    // ~11m precision per 0.0001 deg at equator; good enough to reduce churn but stay accurate
+    return Math.round(x * 10000) / 10000;
+}
+
+function roundRadius(r) {
+    // snap to 100m buckets
+    return Math.round((r || 0) / 100) * 100;
+}
+
+function normalizeFilters(f) {
+    const o = f || {};
+    return {toilets: !!o.toilets, fountains: !!o.fountains, glass: !!o.glass};
+}
+
+function keyFor(lat, lon, radius, filters) {
+    const f = normalizeFilters(filters);
+    return `${roundCoord(lat)},${roundCoord(lon)}|${roundRadius(radius)}|t${+f.toilets}f${+f.fountains}g${+f.glass}`;
+}
+
 // ---------- Emoji DivIcons ----------
 function emojiDivIcon(emoji, extraClass = "") {
     return L.divIcon({
@@ -159,7 +183,7 @@ function pickIcon(tags) {
     return ICONS.recycle; // fallback
 }
 
-function MapRefresher({center, radius, onData}) {
+function MapRefresher({center, radius, filters, onData}) {
     const map = useMap();
     const abortRef = useRef(null);
 
@@ -181,13 +205,28 @@ function MapRefresher({center, radius, onData}) {
     }, [map, radius]);
 
     const doFetch = useCallback((lat, lng, r) => {
+        const k = keyFor(lat, lng, r, filters);
+        const now = Date.now();
+        const cached = CACHE.get(k);
+        if (cached && (now - cached.at) < CACHE_TTL_MS) {
+            console.log(`[Cache][Hit] ${k}`);
+            onData(cached.data);
+            return Promise.resolve();
+        }
+        console.log(`[Cache][Miss] ${k}`);
         // Cancel any in-flight request
         if (abortRef.current) abortRef.current.abort();
         const ctrl = new AbortController();
         abortRef.current = ctrl;
-        return fetchOverpass(lat, lng, r, ctrl.signal).then(onData).catch(() => {
-        });
-    }, [onData]);
+        return fetchOverpass(lat, lng, r, ctrl.signal, normalizeFilters(filters))
+            .then((data) => {
+                CACHE.set(k, {at: Date.now(), data});
+                onData(data);
+            })
+            .catch(() => {
+                // ignore (likely aborted); keep current data
+            });
+    }, [onData, filters]);
 
     useEffect(() => {
         if (!center) return;
@@ -314,7 +353,7 @@ export default function NearbyMap() {
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <MapRefresher center={center} radius={radius} onData={setPoints}/>
+                <MapRefresher center={center} radius={radius} filters={filters} onData={setPoints}/>
                 {markers}
             </MapContainer>
         </div>
