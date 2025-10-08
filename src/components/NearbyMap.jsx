@@ -95,6 +95,23 @@ async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
         }
     });
 
+    // Parse Retry-After header (seconds or HTTP-date). Returns milliseconds (capped)
+    function parseRetryAfter(header) {
+        if (!header) return null;
+        const capMs = 15000; // cap to 15s to keep UI responsive
+        const s = header.trim();
+        const secs = Number(s);
+        if (!Number.isNaN(secs) && secs >= 0) {
+            return Math.min(capMs, Math.max(0, secs * 1000));
+        }
+        const dateMs = Date.parse(s);
+        if (!Number.isNaN(dateMs)) {
+            const delta = dateMs - Date.now();
+            return Math.min(capMs, Math.max(0, delta));
+        }
+        return null;
+    }
+
     const maxAttempts = 3; // 1 initial + up to 2 retries on 504
     let attempt = 0;
     let lastError;
@@ -127,7 +144,20 @@ async function fetchOverpass(lat, lon, radius = 1000, signal, opts) {
             break;
         }
 
-        // Switch to fallback endpoint if 400/429 encountered (likely rate limiting or parsing quirk)
+        // Special handling for rate limiting / maintenance with Retry-After
+        if (res.status === 429 || res.status === 503) {
+            const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
+            if (retryAfter != null) {
+                console.log(`[Request][Backoff] ${timestamp} Overpass HTTP ${res.status} with Retry-After=${retryAfter}ms on ${endpoints[endpointIndex]} (attempt ${attempt}).`);
+                await sleep(retryAfter);
+                // retry same endpoint once without consuming an extra attempt beyond the loop increment
+                attempt--; // neutralize this attempt to retry same endpoint
+                continue;
+            }
+            // No Retry-After header => fall through to mirror switch/default handling below
+        }
+
+        // Switch to fallback endpoint if 400 encountered (likely parsing quirk) or 429/5xx without usable Retry-After
         if ((res.status === 400 || res.status === 429 || (res.status >= 500 && res.status !== 504)) && endpointIndex < endpoints.length - 1) {
             const text = await res.text().catch(() => "");
             console.log(`[Request][Switch] ${timestamp} Overpass HTTP ${res.status} on ${endpoints[endpointIndex]} (attempt ${attempt}). Body: ${text?.slice(0, 200)}`);
