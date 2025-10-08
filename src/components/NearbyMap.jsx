@@ -191,12 +191,21 @@ function MapRefresher({center, radius, onData}) {
 
     useEffect(() => {
         if (!center) return;
+        // Recenter the map when the external center changes (e.g., geolocation resolves)
+        try {
+            if (map && typeof map.setView === "function") {
+                const z = typeof map.getZoom === "function" ? map.getZoom() : 15;
+                map.setView([center[0], center[1]], z, {animate: true});
+            }
+        } catch (_) {
+            // no-op: safe guard if map isn't ready
+        }
         const r = computeViewportRadius();
         doFetch(center[0], center[1], r);
         return () => {
             if (abortRef.current) abortRef.current.abort();
         };
-    }, [center, radius, onData, computeViewportRadius, doFetch]);
+    }, [center, radius, onData, computeViewportRadius, doFetch, map]);
 
     // Refetch when the map moves or zooms (light debounce) with updated radius
     useEffect(() => {
