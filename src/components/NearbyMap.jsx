@@ -68,7 +68,7 @@ out;
 (
   ${parts.join("\n  ")}
 );
-out center 80;
+out center;
 `;
 }
 
