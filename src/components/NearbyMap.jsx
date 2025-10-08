@@ -343,39 +343,46 @@ export default function NearbyMap() {
         [points, filters]
     );
 
-    const toggle = (key) => setFilters((f) => ({...f, [key]: !f[key]}));
-
-    const btnStyle = (active) => ({
-        padding: "6px 10px",
-        marginRight: 8,
-        borderRadius: 6,
-        border: "1px solid #ccc",
-        background: active ? "#1e90ff" : "#fff",
-        color: active ? "#fff" : "#333",
-        cursor: "pointer"
-    });
 
     return (
         <div style={{height: "100vh", width: "100%", position: "relative"}}>
             <div style={{
                 position: "absolute",
                 top: 10,
-                left: 10,
+                left: 60,
                 zIndex: 1000,
                 background: "rgba(255,255,255,0.9)",
                 padding: 8,
                 borderRadius: 8,
-                boxShadow: "0 1px 4px rgba(0,0,0,0.1)"
-            }}>
-                <button title="Toggle toilets" onClick={() => toggle("toilets")} style={btnStyle(filters.toilets)}>🚻
-                    Toilets
-                </button>
-                <button title="Toggle drinking fountains" onClick={() => toggle("fountains")}
-                        style={btnStyle(filters.fountains)}>🚰 Fountains
-                </button>
-                <button title="Toggle glass recycling" onClick={() => toggle("glass")}
-                        style={btnStyle(filters.glass)}>♻️ Glass
-                </button>
+                boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
+                display: "flex",
+                alignItems: "center",
+                gap: 10
+            }} aria-label="Filters">
+                <label style={{display: "flex", gap: 6, alignItems: "center", color: "#000"}}>
+                    <input
+                        type="checkbox"
+                        checked={!!filters.toilets}
+                        onChange={(e) => setFilters((f) => ({...f, toilets: e.target.checked}))}
+                    />
+                    🚻 Toilets
+                </label>
+                <label style={{display: "flex", gap: 6, alignItems: "center", color: "#000"}}>
+                    <input
+                        type="checkbox"
+                        checked={!!filters.fountains}
+                        onChange={(e) => setFilters((f) => ({...f, fountains: e.target.checked}))}
+                    />
+                    🚰 Water
+                </label>
+                <label style={{display: "flex", gap: 6, alignItems: "center", color: "#000"}}>
+                    <input
+                        type="checkbox"
+                        checked={!!filters.glass}
+                        onChange={(e) => setFilters((f) => ({...f, glass: e.target.checked}))}
+                    />
+                    ♻️ Glass
+                </label>
             </div>
             <MapContainer center={[center[0], center[1]]} zoom={15} style={{height: "100%", width: "100%"}}
                           scrollWheelZoom>
