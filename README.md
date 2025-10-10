@@ -1,5 +1,7 @@
 # Nearby Amenities Map
 
+## Overview
+
 I couldn't find a basic straight to the point app to show me where is the next toilet or the next fountain, so I decided
 to build my own using OpensStreetMap and the Overpass API.
 The app centers on your location (with permission) and queries the Overpass API, displaying emoji-styled markers for a
@@ -8,6 +10,10 @@ quick visual scan.
 - Toilets: 🚻
 - Drinking water: 🚰
 - Glass recycling: ♻️
+
+## Live Demo
+
+Try out the application here: [Nearby Amenities Live Demo](https://nearby-amenities.netlify.app/)
 
 ## Quick start
 
