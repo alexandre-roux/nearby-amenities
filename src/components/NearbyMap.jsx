@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
-import {MapContainer, TileLayer} from "react-leaflet";
+import {CircleMarker, MapContainer, TileLayer} from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import "../emoji-marker.css";
 import "./NearbyMap.scss";
@@ -18,7 +18,7 @@ export default function NearbyMap() {
     const [locateMessage, setLocateMessage] = useState("");
     const isMobile = useIsMobile();
 
-    // Consolidated interaction props for MapContainer to reduce repetition
+    // Consolidated interaction props for MapContainer
     const interactionProps = useMemo(() => (
         isMobile
             ? {
@@ -55,7 +55,7 @@ export default function NearbyMap() {
         };
 
         const failFallback = (reason) => {
-            // Fallback to approximate IP-based geolocation
+            // Approximate IP-based geolocation
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 6000);
             fetch("https://ipapi.co/json/", {signal: controller.signal})
@@ -138,24 +138,17 @@ export default function NearbyMap() {
                     {isLocating ? "Locating..." : (isMobile ? "📍 Locate" : "📍 Locate me")}
                 </button>
                 {locateMessage && (
-                    <span
-                        className="location-status"
-                        role="status"
-                        aria-live="polite"
-                    >
+                    <span className="location-status" role="status" aria-live="polite">
                         {locateMessage}
                     </span>
                 )}
                 {isLoading && (
-                    <span
-                        className="loading-status"
-                        role="status"
-                        aria-live="polite"
-                    >
+                    <span className="loading-status" role="status" aria-live="polite">
                         Loading...
                     </span>
                 )}
             </div>
+
             <MapContainer
                 key={isMobile ? 'mobile' : 'desktop'}
                 center={[center[0], center[1]]}
@@ -167,8 +160,21 @@ export default function NearbyMap() {
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <MapRefresher center={center} radius={radius} filters={filters} onData={setPoints}
-                              onLoading={setIsLoading}/>
+
+                {/* Blue user location marker */}
+                <CircleMarker
+                    center={center}
+                    radius={8}
+                    pathOptions={{color: '#1d4ed8', fillColor: '#3b82f6', fillOpacity: 0.9}}
+                />
+
+                <MapRefresher
+                    center={center}
+                    radius={radius}
+                    filters={filters}
+                    onData={setPoints}
+                    onLoading={setIsLoading}
+                />
                 {markers}
             </MapContainer>
         </div>
