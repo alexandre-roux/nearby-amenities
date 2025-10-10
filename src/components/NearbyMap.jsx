@@ -137,6 +137,15 @@ export default function NearbyMap() {
                 >
                     {isLocating ? "Locating..." : (isMobile ? "📍 Locate" : "📍 Locate me")}
                 </button>
+                {locateMessage && (
+                    <span
+                        className="location-status"
+                        role="status"
+                        aria-live="polite"
+                    >
+                        {locateMessage}
+                    </span>
+                )}
                 {isLoading && (
                     <span
                         className="loading-status"
@@ -144,15 +153,6 @@ export default function NearbyMap() {
                         aria-live="polite"
                     >
                         Loading...
-                    </span>
-                )}
-                {locateMessage && (
-                    <span
-                        className="loading-status"
-                        role="status"
-                        aria-live="polite"
-                    >
-                        {locateMessage}
                     </span>
                 )}
             </div>

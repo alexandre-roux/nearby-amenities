@@ -60,9 +60,14 @@
     color: #000;
 }
 
-/* Loading status text */
+/* Status text */
 .loading-status {
-    font-weight: 600;
+    font-weight: 600; /* keep loading bold */
+    color: #000;
+}
+
+.location-status {
+    font-weight: 400; /* make location message not bold */
     color: #000;
 }
 
@@ -95,18 +100,17 @@
         text-overflow: ellipsis; /* prevent long labels from causing overflow */
     }
 
-    .loading-status {
+    .loading-status, .location-status {
         margin-left: 0;
         width: 100%;
         display: block;
         text-align: center;
-        margin-top: 6px; /* small spacing below buttons */
     }
 }
 
 /* Desktop defaults (> 768px) */
 @media (min-width: 769px) {
-    .loading-status {
+    .loading-status, .location-status {
         margin-left: 8px;
         display: inline;
         text-align: left;
