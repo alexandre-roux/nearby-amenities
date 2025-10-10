@@ -15,6 +15,7 @@ export default function NearbyMap() {
     const [filters, setFilters] = useState({toilets: true, fountains: true, glass: true});
     const [isLoading, setIsLoading] = useState(true);
     const [isLocating, setIsLocating] = useState(false);
+    const [locateMessage, setLocateMessage] = useState("");
     const isMobile = useIsMobile();
 
     // Consolidated interaction props for MapContainer to reduce repetition
@@ -44,18 +45,53 @@ export default function NearbyMap() {
     }, []);
 
     const handleLocateMe = useCallback(() => {
-        if (!("geolocation" in navigator)) return;
         setIsLocating(true);
-        navigator.geolocation.getCurrentPosition(
-            (pos) => {
-                setCenter([pos.coords.latitude, pos.coords.longitude]);
-                setIsLocating(false);
-            },
-            () => {
-                setIsLocating(false);
-            },
-            {enableHighAccuracy: true, maximumAge: 5000, timeout: 10000}
-        );
+        setLocateMessage("");
+
+        const done = (lat, lng, message) => {
+            setCenter([lat, lng]);
+            setIsLocating(false);
+            if (message) setLocateMessage(message);
+        };
+
+        const failFallback = (reason) => {
+            // Fallback to approximate IP-based geolocation
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 6000);
+            fetch("https://ipapi.co/json/", {signal: controller.signal})
+                .then((r) => (r.ok ? r.json() : Promise.reject(new Error("ipapi failed"))))
+                .then((data) => {
+                    if (data && typeof data.latitude === "number" && typeof data.longitude === "number") {
+                        done(data.latitude, data.longitude, "Approximate location (IP-based)");
+                    } else {
+                        throw new Error("IP data missing");
+                    }
+                })
+                .catch(() => {
+                    setIsLocating(false);
+                    setLocateMessage(reason || "Unable to get your location");
+                })
+                .finally(() => clearTimeout(timer));
+        };
+
+        if ("geolocation" in navigator && navigator.geolocation) {
+            const opts = {enableHighAccuracy: true, maximumAge: 5000, timeout: 10000};
+            navigator.geolocation.getCurrentPosition(
+                (pos) => done(pos.coords.latitude, pos.coords.longitude),
+                (err) => {
+                    let msg = "Location denied or unavailable";
+                    if (err && err.message) {
+                        msg = err.message;
+                    } else if (typeof location !== "undefined" && location.protocol !== "https:") {
+                        msg = "Location requires HTTPS; using approximate location";
+                    }
+                    failFallback(msg);
+                },
+                opts
+            );
+        } else {
+            failFallback("Geolocation not available; using approximate location");
+        }
     }, []);
 
     const markers = useAmenityMarkers(points, filters);
@@ -95,7 +131,7 @@ export default function NearbyMap() {
                 <button
                     type="button"
                     onClick={handleLocateMe}
-                    disabled={isLocating || !("geolocation" in navigator)}
+                    disabled={isLocating}
                     title={"Locate me"}
                     className="filter-btn"
                 >
@@ -108,6 +144,15 @@ export default function NearbyMap() {
                         aria-live="polite"
                     >
                         Loading...
+                    </span>
+                )}
+                {locateMessage && (
+                    <span
+                        className="loading-status"
+                        role="status"
+                        aria-live="polite"
+                    >
+                        {locateMessage}
                     </span>
                 )}
             </div>
