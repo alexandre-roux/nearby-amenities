@@ -123,8 +123,23 @@ Preview the production build locally:
 - `yarn build` — build production assets
 - `yarn preview` — preview the production build
 - `yarn lint` — run ESLint
+- `yarn test` — run tests once with Vitest
+- `yarn test:watch` — run tests in watch mode
+- `yarn coverage` — run tests with coverage report
 
 npm equivalents are available via `npm run <script>`.
+
+## Testing
+
+This project uses Vitest and Testing Library for unit tests.
+
+- Install deps: `yarn` (or `npm install`)
+- Run once: `yarn test` (or `npm run test`)
+- Watch mode: `yarn test:watch`
+- Coverage: `yarn coverage`
+
+The test environment is jsdom and is configured via vite.config.js. A small setup file at `src/test/setup.ts` enables
+jest-dom matchers.
 
 ## Contributing
 
