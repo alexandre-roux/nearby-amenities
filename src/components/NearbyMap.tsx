@@ -1,26 +1,27 @@
-import {useCallback, useEffect, useMemo, useState} from "react";
-import {CircleMarker, MapContainer, TileLayer} from "react-leaflet";
-import "leaflet/dist/leaflet.css";
-import "../emoji-marker.css";
-import "./NearbyMap.scss";
-import useIsMobile from "../hooks/useIsMobile";
-import useAmenityMarkers from "../hooks/useAmenityMarkers";
-import MapRefresher from "./MapRefresher";
-import {filtersConfig} from "../config/filtersConfig";
+import {useCallback, useEffect, useMemo, useState} from 'react';
+import {CircleMarker, MapContainer, TileLayer} from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import '../emoji-marker.css';
+import './NearbyMap.scss';
+import useIsMobile from '../hooks/useIsMobile';
+import useAmenityMarkers from '../hooks/useAmenityMarkers';
+import MapRefresher from './MapRefresher';
+import {filtersConfig} from '../config/filtersConfig';
+import type {Filters, OverpassPoint} from '../utils/overpass';
 
 export default function NearbyMap() {
-    const [center, setCenter] = useState([52.520008, 13.404954]); // Berlin fallback
-    const [radius] = useState(1200);
-    const [points, setPoints] = useState([]);
-    const [filters, setFilters] = useState({toilets: true, fountains: true, glass: true});
+    const [center, setCenter] = useState<[number, number]>([52.520008, 13.404954]); // Berlin fallback
+    const [radius] = useState<number>(1200);
+    const [points, setPoints] = useState<OverpassPoint[]>([]);
+    const [filters, setFilters] = useState<Filters>({toilets: true, fountains: true, glass: true});
     const [isLoading, setIsLoading] = useState(true);
     const [isLocating, setIsLocating] = useState(false);
-    const [locateMessage, setLocateMessage] = useState("");
+    const [locateMessage, setLocateMessage] = useState('');
     const isMobile = useIsMobile();
 
     // Consolidated interaction props for MapContainer
-    const interactionProps = useMemo(() => (
-        isMobile
+    const interactionProps = useMemo(
+        () => (isMobile
             ? {
                 zoomControl: false,
                 scrollWheelZoom: false,
@@ -28,69 +29,71 @@ export default function NearbyMap() {
                 doubleClickZoom: false,
                 boxZoom: false,
                 keyboard: false,
+                // @ts-ignore legacy Leaflet mobile option
                 tap: false,
             }
-            : {}
-    ), [isMobile]);
+            : {}),
+        [isMobile],
+    );
 
     // Browser geolocation (initial attempt)
     useEffect(() => {
-        if (!("geolocation" in navigator)) return;
+        if (!('geolocation' in navigator)) return;
         navigator.geolocation.getCurrentPosition(
             (pos) => setCenter([pos.coords.latitude, pos.coords.longitude]),
             () => {
             },
-            {enableHighAccuracy: true, maximumAge: 10000, timeout: 8000}
+            {enableHighAccuracy: true, maximumAge: 10000, timeout: 8000},
         );
     }, []);
 
     const handleLocateMe = useCallback(() => {
         setIsLocating(true);
-        setLocateMessage("");
+        setLocateMessage('');
 
-        const done = (lat, lng, message) => {
+        const done = (lat: number, lng: number, message?: string) => {
             setCenter([lat, lng]);
             setIsLocating(false);
             if (message) setLocateMessage(message);
         };
 
-        const failFallback = (reason) => {
+        const failFallback = (reason?: string) => {
             // Approximate IP-based geolocation
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 6000);
-            fetch("https://ipapi.co/json/", {signal: controller.signal})
-                .then((r) => (r.ok ? r.json() : Promise.reject(new Error("ipapi failed"))))
+            fetch('https://ipapi.co/json/', {signal: controller.signal})
+                .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ipapi failed'))))
                 .then((data) => {
-                    if (data && typeof data.latitude === "number" && typeof data.longitude === "number") {
-                        done(data.latitude, data.longitude, "Approximate location (IP-based)");
+                    if (data && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
+                        done(data.latitude, data.longitude, 'Approximate location (IP-based)');
                     } else {
-                        throw new Error("IP data missing");
+                        throw new Error('IP data missing');
                     }
                 })
                 .catch(() => {
                     setIsLocating(false);
-                    setLocateMessage(reason || "Unable to get your location");
+                    setLocateMessage(reason || 'Unable to get your location');
                 })
                 .finally(() => clearTimeout(timer));
         };
 
-        if ("geolocation" in navigator && navigator.geolocation) {
-            const opts = {enableHighAccuracy: true, maximumAge: 5000, timeout: 10000};
+        if ('geolocation' in navigator && navigator.geolocation) {
+            const opts: PositionOptions = {enableHighAccuracy: true, maximumAge: 5000, timeout: 10000};
             navigator.geolocation.getCurrentPosition(
                 (pos) => done(pos.coords.latitude, pos.coords.longitude),
                 (err) => {
-                    let msg = "Location denied or unavailable";
-                    if (err && err.message) {
-                        msg = err.message;
-                    } else if (typeof location !== "undefined" && location.protocol !== "https:") {
-                        msg = "Location requires HTTPS; using approximate location";
+                    let msg = 'Location denied or unavailable';
+                    if (err && (err as any).message) {
+                        msg = (err as any).message;
+                    } else if (typeof location !== 'undefined' && location.protocol !== 'https:') {
+                        msg = 'Location requires HTTPS; using approximate location';
                     }
                     failFallback(msg);
                 },
-                opts
+                opts,
             );
         } else {
-            failFallback("Geolocation not available; using approximate location");
+            failFallback('Geolocation not available; using approximate location');
         }
     }, []);
 
@@ -121,31 +124,29 @@ export default function NearbyMap() {
                                 <input
                                     type="checkbox"
                                     checked={!!filters[key]}
-                                    onChange={(e) => setFilters((f) => ({...f, [key]: e.target.checked}))}
+                                    onChange={(e) => setFilters((f) => ({
+                                        ...f,
+                                        [key]: (e.target as HTMLInputElement).checked
+                                    }))}
                                 />
                                 {label}
                             </label>
                         ))}
                     </>
                 )}
-                <button
-                    type="button"
-                    onClick={handleLocateMe}
-                    disabled={isLocating}
-                    title={"Locate me"}
-                    className="filter-btn"
-                >
-                    {isLocating ? "Locating..." : (isMobile ? "📍 Locate" : "📍 Locate me")}
+                <button type="button" onClick={handleLocateMe} disabled={isLocating} title={'Locate me'}
+                        className="filter-btn">
+                    {isLocating ? 'Locating...' : isMobile ? '📍 Locate' : '📍 Locate me'}
                 </button>
                 {locateMessage && (
                     <span className="location-status" role="status" aria-live="polite">
-                        {locateMessage}
-                    </span>
+            {locateMessage}
+          </span>
                 )}
                 {isLoading && (
                     <span className="loading-status" role="status" aria-live="polite">
-                        Loading...
-                    </span>
+            Loading...
+          </span>
                 )}
             </div>
 
@@ -162,19 +163,11 @@ export default function NearbyMap() {
                 />
 
                 {/* Blue user location marker */}
-                <CircleMarker
-                    center={center}
-                    radius={8}
-                    pathOptions={{color: '#1d4ed8', fillColor: '#3b82f6', fillOpacity: 0.9}}
-                />
+                <CircleMarker center={center} radius={8}
+                              pathOptions={{color: '#1d4ed8', fillColor: '#3b82f6', fillOpacity: 0.9}}/>
 
-                <MapRefresher
-                    center={center}
-                    radius={radius}
-                    filters={filters}
-                    onData={setPoints}
-                    onLoading={setIsLoading}
-                />
+                <MapRefresher center={center} radius={radius} filters={filters} onData={setPoints}
+                              onLoading={setIsLoading}/>
                 {markers}
             </MapContainer>
         </div>
