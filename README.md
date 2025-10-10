@@ -60,15 +60,28 @@ Preview the production build locally:
 
 ## Project structure (key files)
 
-- `index.html` — includes Leaflet CSS and bootstraps the React app.
-- `src/App.jsx` — renders the map component.
-- `src/components/NearbyMap.jsx` — main logic: icons, Overpass query, fetch, markers, and map.
-- `src/emoji-marker.css` — styles for the emoji markers.
+- `index.html` — sets up the root and includes Leaflet CSS.
+- `src/main.tsx` — app entry point; mounts React to `#root`.
+- `src/App.tsx` — renders the `NearbyMap` component and app shell.
+- `src/components/NearbyMap.tsx` — map UI, filters, geolocation, and markers.
+- `src/components/NearbyMap.scss` — styles for the NearbyMap component.
+- `src/components/MapRefresher.tsx` — listens to map move/zoom and fetches data with caching.
+- `src/hooks/useIsMobile.ts` — detects mobile to adjust map interactions and UI.
+- `src/hooks/useAmenityMarkers.tsx` — builds Marker and Popup elements from Overpass data.
+- `src/utils/overpass.ts` — Overpass QL builder, fetch with retries/backoff, and in-memory cache.
+- `src/utils/icons.ts` — emoji-based Leaflet DivIcons and `pickIcon` helper.
+- `src/config/filtersConfig.ts` — filter keys and labels used by the UI.
+- `src/emoji-marker.css` — styles for the emoji marker badges.
+- `src/index.css` — global base styles and layout.
+- `public/` — static assets served as-is.
+- `vite.config.js` — Vite configuration.
+- `eslint.config.js` — ESLint configuration.
+- `tsconfig.json`, `vite-env.d.ts` — TypeScript configuration.
 - `package.json` — scripts and dependencies.
 
 ## Configuration
 
-- Radius: Defaults to 1200 meters in `NearbyMap.jsx`. Change the `radius` state if you want a different search area.
+- Radius: Defaults to 1200 meters in `NearbyMap.tsx`. Change the `radius` state if you want a different search area.
 - Initial center: Defaults to Berlin `[52.520008, 13.404954]` until geolocation resolves.
 - Overpass endpoint: Uses `https://overpass-api.de/api/interpreter` by default. If you need to point to a different
   instance, change the `fetchOverpass` URL.
