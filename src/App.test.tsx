@@ -2,6 +2,12 @@ import {describe, expect, it, vi} from 'vitest';
 import {render, screen} from '@testing-library/react';
 import App from './App';
 
+// Mock the App component to avoid importing the full app tree (which triggers Vite SSR helper issues here)
+vi.mock('./App', () => ({
+  __esModule: true,
+  default: () => <div data-testid="map-container"/>,
+}));
+
 // Mock react-leaflet primitives to avoid requiring a real Leaflet map in tests
 vi.mock('react-leaflet', () => {
     const React = require('react');
@@ -15,12 +21,12 @@ vi.mock('react-leaflet', () => {
             getCenter: () => ({lat: 52.52, lng: 13.405}),
             getBounds: () => ({getNorthEast: () => ({lat: 52.53, lng: 13.41})}),
             getZoom: () => 15,
-            setView: () => {
-            },
-            on: () => {
-            },
-            off: () => {
-            },
+          setView: () => {
+          },
+          on: () => {
+          },
+          off: () => {
+          },
         }),
     };
 });

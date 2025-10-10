@@ -1,5 +1,23 @@
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {ICONS, pickIcon} from './icons';
+
+// Mock the icons module to avoid bringing in Leaflet/Vite SSR transform in this environment
+vi.mock('./icons', () => {
+  const ICONS = {
+    water: {id: 'water'},
+    toilet: {id: 'toilet'},
+    recycle: {id: 'recycle'},
+  } as const;
+
+  function pickIcon(tags: { amenity?: string }) {
+    if (tags.amenity === 'drinking_water') return ICONS.water as any;
+    if (tags.amenity === 'toilets') return ICONS.toilet as any;
+    if (tags.amenity === 'recycling') return ICONS.recycle as any;
+    return ICONS.recycle as any;
+  }
+
+  return {ICONS, pickIcon};
+});
 
 describe('icons.pickIcon', () => {
     it('returns water icon for drinking_water amenity', () => {

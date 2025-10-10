@@ -34,7 +34,8 @@
         "vitest": "^2.1.4",
         "jsdom": "^25.0.1",
         "@testing-library/react": "^16.0.1",
-        "@testing-library/jest-dom": "^6.5.0"
+        "@testing-library/jest-dom": "^6.5.0",
+        "@testing-library/dom": "^10.4.0"
     },
     "resolutions": {
         "vite": "npm:rolldown-vite@7.1.14"

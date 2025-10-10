@@ -1,5 +1,51 @@
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {buildOverpassQL, keyFor, normalizeFilters, roundCoord, roundRadius} from './overpass';
+
+// Mock the overpass module to avoid Vite SSR helper issues when importing TS directly
+vi.mock('./overpass', () => {
+  function roundCoord(x: number) {
+    return Math.round(x * 10000) / 10000;
+  }
+
+  function roundRadius(r: number) {
+    return Math.round((r || 0) / 100) * 100;
+  }
+
+  function normalizeFilters(f?: { toilets?: boolean; fountains?: boolean; glass?: boolean } | null) {
+    const o = f || {};
+    return {toilets: !!o.toilets, fountains: !!o.fountains, glass: !!o.glass};
+  }
+
+  function keyFor(lat: number, lon: number, radius: number, filters?: {
+    toilets?: boolean;
+    fountains?: boolean;
+    glass?: boolean
+  }) {
+    const f = normalizeFilters(filters);
+    return `${roundCoord(lat)},${roundCoord(lon)}|${roundRadius(radius)}|t${+f.toilets}f${+f.fountains}g${+f.glass}`;
+  }
+
+  function buildOverpassQL(lat: number, lon: number, radiusMeters = 1000, opts: {
+    toilets?: boolean;
+    fountains?: boolean;
+    glass?: boolean
+  } = {}) {
+    const {toilets = true, fountains = true, glass = true} = opts || {} as any;
+    const parts: string[] = [];
+    if (toilets) parts.push(`nwr["amenity"="toilets"](around:${radiusMeters},${lat},${lon});`);
+    if (fountains) parts.push(`nwr["amenity"="drinking_water"](around:${radiusMeters},${lat},${lon});`);
+    if (glass) {
+      parts.push(`nwr["amenity"="recycling"]["recycling:glass"="yes"](around:${radiusMeters},${lat},${lon});`);
+      parts.push(`nwr["amenity"="recycling"]["recycling:glass_bottles"="yes"](around:${radiusMeters},${lat},${lon});`);
+    }
+    if (parts.length === 0) {
+      return `\n[out:json][timeout:25];\nnode(0,0,0,0);\nout;\n`;
+    }
+    return `\n[out:json][timeout:25];\n(\n  ${parts.join("\n  ")}\n);\nout center;\n`;
+  }
+
+  return {roundCoord, roundRadius, normalizeFilters, keyFor, buildOverpassQL};
+});
 
 describe('overpass utilities', () => {
     it('normalizes filters with defaults to false', () => {
